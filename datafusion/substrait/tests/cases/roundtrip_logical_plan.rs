@@ -253,12 +253,12 @@ async fn select_with_filter_bool_expr() -> Result<()> {
 
 #[tokio::test]
 async fn select_with_limit() -> Result<()> {
-    roundtrip_fill_na("SELECT * FROM data LIMIT 100").await
+    roundtrip_fill_na("SELECT a FROM data LIMIT 100").await
 }
 
 #[tokio::test]
 async fn select_without_limit() -> Result<()> {
-    roundtrip_fill_na("SELECT * FROM data OFFSET 10").await
+    roundtrip_fill_na("SELECT a FROM data OFFSET 10").await
 }
 
 #[tokio::test]
@@ -296,8 +296,9 @@ async fn aggregate_grouping_rollup() -> Result<()> {
         "SELECT a, c, e, avg(b) FROM data GROUP BY ROLLUP (a, c, e)",
         "Projection: data.a, data.c, data.e, avg(data.b)\
         \n  Aggregate: groupBy=[[GROUPING SETS ((data.a, data.c, data.e), (data.a, data.c), (data.a), ())]], aggr=[[avg(data.b)]]\
-        \n    TableScan: data projection=[a, b, c, e]",
-        true
+        \n    TableScan: data",
+        true,
+        false
     ).await
 }
 
@@ -430,6 +431,7 @@ async fn aggregate_case() -> Result<()> {
         "SELECT sum(CASE WHEN a > 0 THEN 1 ELSE NULL END) FROM data",
         "Aggregate: groupBy=[[]], aggr=[[sum(CASE WHEN data.a > Int64(0) THEN Int64(1) ELSE Int64(NULL) END) AS sum(CASE WHEN data.a > Int64(0) THEN Int64(1) ELSE NULL END)]]\
          \n  TableScan: data projection=[a]",
+        true,
         true
     )
         .await
@@ -468,17 +470,14 @@ async fn roundtrip_inlist_5() -> Result<()> {
     // using assert_expected_plan here as a workaround
     assert_expected_plan(
     "SELECT a, f FROM data WHERE (f IN ('a', 'b', 'c') OR a in (SELECT data2.a FROM data2 WHERE f IN ('b', 'c', 'd')))",
-    "Filter: data.f = Utf8(\"a\") OR data.f = Utf8(\"b\") OR data.f = Utf8(\"c\") OR data.a IN (<subquery>)\
-    \n  Subquery:\
-    \n    Projection: data2.a\
-    \n      Filter: data2.f IN ([Utf8(\"b\"), Utf8(\"c\"), Utf8(\"d\")])\
-    \n        TableScan: data2\
-    \n  TableScan: data projection=[a, f], partial_filters=[data.f = Utf8(\"a\") OR data.f = Utf8(\"b\") OR data.f = Utf8(\"c\") OR data.a IN (<subquery>)]\
+    "Projection: data.a, data.f\
+    \n  Filter: data.f IN ([Utf8(\"a\"), Utf8(\"b\"), Utf8(\"c\")]) OR data.a IN (<subquery>)\
     \n    Subquery:\
     \n      Projection: data2.a\
     \n        Filter: data2.f IN ([Utf8(\"b\"), Utf8(\"c\"), Utf8(\"d\")])\
-    \n          TableScan: data2",
-    true).await
+    \n          TableScan: data2\
+    \n    TableScan: data",
+    true, false).await
 }
 
 #[tokio::test]
@@ -515,7 +514,8 @@ async fn roundtrip_exists_filter() -> Result<()> {
         \n  LeftSemi Join: data.a = data2.a Filter: data2.e != CAST(data.e AS Int64)\
         \n    TableScan: data projection=[a, b, e]\
         \n    TableScan: data2 projection=[a, e]",
-        false // "d1" vs "data" field qualifier
+        false, // "d1" vs "data" field qualifier
+        true
     ).await
 }
 
@@ -525,9 +525,10 @@ async fn inner_join() -> Result<()> {
         "SELECT data.a FROM data JOIN data2 ON data.a = data2.a",
         "Projection: data.a\
          \n  Inner Join: data.a = data2.a\
-         \n    TableScan: data projection=[a]\
-         \n    TableScan: data2 projection=[a]",
+         \n    TableScan: data\
+         \n    TableScan: data2",
         true,
+        false,
     )
     .await
 }
@@ -658,6 +659,7 @@ async fn simple_intersect() -> Result<()> {
          \n      Aggregate: groupBy=[[data.a]], aggr=[[]]\
          \n        TableScan: data projection=[a]\
          \n      TableScan: data2 projection=[a]",
+        true,
         true
     )
         .await
@@ -695,15 +697,18 @@ async fn simple_intersect_table_reuse() -> Result<()> {
     // Schema check works because we set aliases to what the Substrait consumer will generate.
     assert_expected_plan(
         "SELECT count(1) FROM (SELECT left.a FROM data AS left INTERSECT SELECT right.a FROM data AS right);",
-        "Aggregate: groupBy=[[]], aggr=[[count(Int64(1))]]\
-        \n  Projection: \
+        "Projection: count(Int64(1))\
+        \n  Aggregate: groupBy=[[]], aggr=[[count(Int64(1))]]\
         \n    LeftSemi Join: left.a = right.a\
         \n      SubqueryAlias: left\
         \n        Aggregate: groupBy=[[data.a]], aggr=[[]]\
-        \n          TableScan: data projection=[a]\
+        \n          Projection: data.a\
+        \n            TableScan: data\
         \n      SubqueryAlias: right\
-        \n        TableScan: data projection=[a]",
-        true
+        \n        Projection: data.a\
+        \n          TableScan: data",
+        true,
+        false
     ).await
 }
 
@@ -781,6 +786,7 @@ async fn roundtrip_literal_struct() -> Result<()> {
         "Projection: Struct({c0:1,c1:true,c2:}) AS struct(Int64(1),Boolean(true),NULL)\
         \n  TableScan: data projection=[]",
         false, // "Struct(..)" vs "struct(..)"
+        true,
     )
     .await
 }
@@ -809,7 +815,7 @@ async fn roundtrip_values() -> Result<()> {
                 List([{struct_field: {string_field: a}}, {struct_field: {string_field: b}}])\
             ), \
             (Int64(NULL), Utf8(NULL), List(), LargeList(), Struct({c0:,int_field:,c2:}), List())",
-    true).await
+    true, true).await
 }
 
 #[tokio::test]
@@ -854,9 +860,9 @@ async fn duplicate_column() -> Result<()> {
     assert_expected_plan(
         "SELECT a + 1 as sum_a, a + 1 as sum_a_2 FROM data",
         "Projection: data.a + Int64(1) AS sum_a, data.a + Int64(1) AS data.a + Int64(1)__temp__0 AS sum_a_2\
-            \n  Projection: data.a + Int64(1)\
-            \n    TableScan: data projection=[a]",
+            \n  TableScan: data",
         true,
+        false
     )
     .await
 }
@@ -1112,13 +1118,22 @@ async fn assert_expected_plan(
     sql: &str,
     expected_plan_str: &str,
     assert_schema: bool,
+    optimize: bool,
 ) -> Result<()> {
     let ctx = create_context().await?;
     let df = ctx.sql(sql).await?;
-    let plan = df.into_optimized_plan()?;
+    let plan = if optimize {
+        df.into_optimized_plan()?
+    } else {
+        df.into_unoptimized_plan()
+    };
     let proto = to_substrait_plan(&plan, &ctx)?;
     let plan2 = from_substrait_plan(&ctx, &proto).await?;
-    let plan2 = ctx.state().optimize(&plan2)?;
+    let plan2 = if optimize {
+        ctx.state().optimize(&plan2)?
+    } else {
+        plan2
+    };
 
     println!("{plan}");
     println!("{plan2}");
@@ -1170,10 +1185,9 @@ async fn assert_substrait_sql(substrait_plan: Plan, sql: &str) -> Result<()> {
 async fn roundtrip_fill_na(sql: &str) -> Result<()> {
     let ctx = create_context().await?;
     let df = ctx.sql(sql).await?;
-    let plan = df.into_optimized_plan()?;
+    let plan = df.into_unoptimized_plan();
     let proto = to_substrait_plan(&plan, &ctx)?;
     let plan2 = from_substrait_plan(&ctx, &proto).await?;
-    let plan2 = ctx.state().optimize(&plan2)?;
 
     // Format plan string and replace all None's with 0
     let plan1str = format!("{plan}").replace("None", "0");

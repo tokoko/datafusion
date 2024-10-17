@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::config::ConfigOptions;
+use datafusion::optimizer::analyzer::expand_wildcard_rule::ExpandWildcardRule;
+use datafusion::optimizer::Analyzer;
 use std::sync::Arc;
 use substrait::proto::expression_reference::ExprType;
 
@@ -177,6 +180,9 @@ pub fn to_substrait_rel(
     ctx: &SessionContext,
     extensions: &mut Extensions,
 ) -> Result<Box<Rel>> {
+    let plan = Analyzer::with_rules(vec![Arc::new(ExpandWildcardRule::new())])
+        .execute_and_check(plan.clone(), &ConfigOptions::default(), |_, _| {})?;
+
     match plan {
         LogicalPlan::TableScan(scan) => {
             let projection = scan.projection.as_ref().map(|p| {
